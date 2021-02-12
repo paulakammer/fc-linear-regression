@@ -1,6 +1,7 @@
 FROM python:3.7-slim-stretch
 
 RUN apt-get update
+RUN apt-get upgrade
 RUN apt-get install -y supervisor nginx
 RUN pip3 install --upgrade pip
 
