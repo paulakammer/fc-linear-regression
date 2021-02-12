@@ -5,7 +5,7 @@ from sklearn.metrics import r2_score, explained_variance_score, max_error, mean_
 from sklearn.model_selection import train_test_split
 
 numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
-df = pd.read_csv("cancer_reg/cancer_reg.csv").select_dtypes(include=numerics).dropna()
+df = pd.read_csv("/home/spaethju/Projects/FeatureCloud/fc_apps/fc-linear-regression/sample_data/cancer_reg/cancer_reg.csv").select_dtypes(include=numerics).dropna()
 
 X = df.drop("TARGET_deathRate", axis=1)
 y = df.loc[:, "TARGET_deathRate"]
@@ -31,6 +31,3 @@ scores = {
 
 print(scores)
 
-df = pd.read_csv("cancer_reg/cancer_reg.csv").select_dtypes(include=numerics).dropna()
-df.iloc[:500, :].to_csv("sample_data/cancer_reg/client1/client1.csv", index=False)
-df.iloc[500:, :].to_csv("sample_data/cancer_reg/client2/client2.csv", index=False)

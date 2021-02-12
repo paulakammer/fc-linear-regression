@@ -219,24 +219,26 @@ class AppLogic:
                 print("Coef:", client.model.coef_)
                 joblib.dump(client.model, self.OUTPUT_DIR + '/model.pkl')
                 model = client.model
-                # Make predictions using the testing set
-                y_pred = model.predict(client.X_test)
 
-                # The mean squared error
-                scores = {
-                    "r2_score": [r2_score(client.y_test, y_pred)],
-                    "explained_variance_score": [explained_variance_score(client.y_test, y_pred)],
-                    "max_error": [max_error(client.y_test, y_pred)],
-                    "mean_absolute_error": [mean_absolute_error(client.y_test, y_pred)],
-                    "mean_squared_error": [mean_squared_error(client.y_test, y_pred)],
-                    "mean_squared_log_error": [mean_squared_log_error(client.y_test, y_pred)],
-                    "mean_absolute_percentage_error": [mean_absolute_percentage_error(client.y_test, y_pred)],
-                    "median_absolute_error": [median_absolute_error(client.y_test, y_pred)]
-                }
+                if self.test_size is not None:
+                    # Make predictions using the testing set
+                    y_pred = model.predict(client.X_test)
 
-                scores_df = pd.DataFrame.from_dict(scores).T
-                scores_df = scores_df.rename({0: "score"}, axis=1)
-                scores_df.to_csv(self.OUTPUT_DIR + "/scores.csv")
+                    # The mean squared error
+                    scores = {
+                        "r2_score": [r2_score(client.y_test, y_pred)],
+                        "explained_variance_score": [explained_variance_score(client.y_test, y_pred)],
+                        "max_error": [max_error(client.y_test, y_pred)],
+                        "mean_absolute_error": [mean_absolute_error(client.y_test, y_pred)],
+                        "mean_squared_error": [mean_squared_error(client.y_test, y_pred)],
+                        "mean_squared_log_error": [mean_squared_log_error(client.y_test, y_pred)],
+                        "mean_absolute_percentage_error": [mean_absolute_percentage_error(client.y_test, y_pred)],
+                        "median_absolute_error": [median_absolute_error(client.y_test, y_pred)]
+                    }
+
+                    scores_df = pd.DataFrame.from_dict(scores).T
+                    scores_df = scores_df.rename({0: "score"}, axis=1)
+                    scores_df.to_csv(self.OUTPUT_DIR + "/scores.csv")
 
                 state = state_finishing
 
