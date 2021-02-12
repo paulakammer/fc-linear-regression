@@ -23,12 +23,12 @@ class AppLogic:
         # Indicates whether there is data to share, if True make sure self.data_out is available
         self.status_available = False
 
-        # Only relevant for master, will stop execution when True
+        # Only relevant for coordinator, will stop execution when True
         self.status_finished = False
 
         # === Parameters set during setup ===
         self.id = None
-        self.master = None
+        self.coordinator = None
         self.clients = None
 
         # === Data ===
@@ -62,12 +62,12 @@ class AppLogic:
 
         shutil.copyfile(self.INPUT_DIR + '/config.yml', self.OUTPUT_DIR + '/config.yml')
 
-    def handle_setup(self, client_id, master, clients):
+    def handle_setup(self, client_id, coordinator, clients):
         # This method is called once upon startup and contains information about the execution context of this instance
         self.id = client_id
-        self.master = master
+        self.coordinator = coordinator
         self.clients = clients
-        print(f'Received setup: {self.id} {self.master} {self.clients}', flush=True)
+        print(f'Received setup: {self.id} {self.coordinator} {self.clients}', flush=True)
 
         self.thread = threading.Thread(target=self.app_flow)
         self.thread.start()
@@ -84,7 +84,7 @@ class AppLogic:
         return self.data_outgoing
 
     def app_flow(self):
-        # This method contains a state machine for the slave and master instance
+        # This method contains a state machine for the client and coordinator instance
 
         # === States ===
         state_initializing = 1
@@ -108,7 +108,7 @@ class AppLogic:
                 print("Initializing")
                 if self.id is not None:  # Test if setup has happened already
                     state = state_read_input
-                    print("Coordinator", self.master)
+                    print("Coordinator", self.coordinator)
 
             if state == state_read_input:
                 print('Read input and config')
@@ -136,14 +136,14 @@ class AppLogic:
                 client.local_preprocessing()
                 data_to_send = jsonpickle.encode(
                     [client.X_offset_local, client.y_offset_local, client.X_scale_local, client.X.shape[0]])
-                if self.master:
+                if self.coordinator:
                     self.data_incoming.append(data_to_send)
                     state = state_aggregate_preprocessing
                 else:
                     self.data_outgoing = data_to_send
                     self.status_available = True
                     state = state_wait_for_preprocessing
-                    print(f'[CLIENT] Sending preprocessing data to master', flush=True)
+                    print(f'[CLIENT] Sending preprocessing data to coordinator', flush=True)
 
             if state == state_wait_for_preprocessing:
                 print("Waiting for preprocessing")
@@ -162,14 +162,14 @@ class AppLogic:
 
                 data_to_send = jsonpickle.encode([xtx, xty])
 
-                if self.master:
+                if self.coordinator:
                     self.data_incoming.append(data_to_send)
                     state = state_global_aggregation
                 else:
                     self.data_outgoing = data_to_send
                     self.status_available = True
                     state = state_wait_for_aggregation
-                    print(f'[CLIENT] Sending computation data to master', flush=True)
+                    print(f'[CLIENT] Sending computation data to coordinator', flush=True)
 
             if state == state_wait_for_aggregation:
                 print("Wait for aggregation")
@@ -245,7 +245,7 @@ class AppLogic:
             if state == state_finishing:
                 print("Finishing")
                 self.progress = 'finishing...'
-                if self.master:
+                if self.coordinator:
                     time.sleep(10)
                 self.status_finished = True
                 break
