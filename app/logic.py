@@ -1,3 +1,4 @@
+import shutil
 import threading
 import time
 
@@ -5,14 +6,11 @@ import joblib
 import jsonpickle
 import pandas as pd
 import yaml
-import shutil
-
 from sklearn.metrics import mean_squared_error, r2_score, explained_variance_score, max_error, mean_absolute_error, \
-    mean_squared_log_error, mean_absolute_percentage_error, median_absolute_error
+    mean_absolute_percentage_error, median_absolute_error
 from sklearn.model_selection import train_test_split
 
-from app.fed_lin_reg.global_aggregation import aggregate_preprocessing, aggregate_beta
-from app.fed_lin_reg.local import LinearRegressionClient
+from app.algo import Coordinator, Client
 
 
 class AppLogic:
@@ -44,8 +42,8 @@ class AppLogic:
         self.INPUT_DIR = "/mnt/input"
         self.OUTPUT_DIR = "/mnt/output"
 
-        self.train = None
-        self.test = None
+        self.client = None
+        self.input = None
         self.sep = None
         self.label_column = None
         self.test_size = None
@@ -54,7 +52,7 @@ class AppLogic:
     def read_config(self):
         with open(self.INPUT_DIR + '/config.yml') as f:
             config = yaml.load(f, Loader=yaml.FullLoader)['fc_linear_regression']
-            self.train = config['files']['input']
+            self.input = config['files']['input']
             self.sep = config['files']['sep']
             self.label_column = config['files']['label_column']
             self.test_size = config['evaluation']['test_size']
@@ -101,7 +99,6 @@ class AppLogic:
         # Initial state
         state = state_initializing
         self.progress = 'initializing...'
-        client = LinearRegressionClient()
 
         while True:
             if state == state_initializing:
@@ -109,13 +106,16 @@ class AppLogic:
                 if self.id is not None:  # Test if setup has happened already
                     state = state_read_input
                     print("Coordinator", self.coordinator)
-
+                    if self.coordinator:
+                        self.client = Coordinator()
+                    else:
+                        self.client = Client()
             if state == state_read_input:
                 print('Read input and config')
                 self.read_config()
 
                 numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
-                X = pd.read_csv(self.INPUT_DIR + "/" + self.train, sep=self.sep).select_dtypes(
+                X = pd.read_csv(self.INPUT_DIR + "/" + self.input, sep=self.sep).select_dtypes(
                     include=numerics).dropna()
                 y = X.loc[:, self.label_column]
                 X = X.drop(self.label_column, axis=1)
@@ -123,19 +123,18 @@ class AppLogic:
                 if self.test_size is not None:
                     X, X_test, y, y_test = train_test_split(X, y, test_size=self.test_size,
                                                             random_state=self.random_state)
-                    client.X_test = X_test
-                    client.y_test = y_test
-                client.X = X
-                client.y = y
+                    self.client.X_test = X_test
+                    self.client.y_test = y_test
+                self.client.X = X
+                self.client.y = y
 
                 state = state_local_preprocessing
-
             if state == state_local_preprocessing:
                 print("Local Preprocessing")
                 self.progress = 'preprocessing...'
-                client.local_preprocessing()
+                self.client.local_preprocessing()
                 data_to_send = jsonpickle.encode(
-                    [client.X_offset_local, client.y_offset_local, client.X_scale_local, client.X.shape[0]])
+                    [self.client.X_offset_local, self.client.y_offset_local, self.client.X_scale_local, self.client.X.shape[0]])
                 if self.coordinator:
                     self.data_incoming.append(data_to_send)
                     state = state_aggregate_preprocessing
@@ -144,7 +143,6 @@ class AppLogic:
                     self.status_available = True
                     state = state_wait_for_preprocessing
                     print(f'[CLIENT] Sending preprocessing data to coordinator', flush=True)
-
             if state == state_wait_for_preprocessing:
                 print("Waiting for preprocessing")
                 self.progress = 'wait for preprocessing'
@@ -152,13 +150,12 @@ class AppLogic:
                     print("Received preprocess data from coordinator.")
                     data = jsonpickle.decode(self.data_incoming[0])
                     self.data_incoming = []
-                    client.set_global_offsets(data)
+                    self.client.set_global_offsets(data)
                     state = state_local_computation
-
             if state == state_local_computation:
                 print("Perform local computation")
                 self.progress = 'local computation'
-                xtx, xty = client.local_computation()
+                xtx, xty = self.client.local_computation()
 
                 data_to_send = jsonpickle.encode([xtx, xty])
 
@@ -170,7 +167,6 @@ class AppLogic:
                     self.status_available = True
                     state = state_wait_for_aggregation
                     print(f'[CLIENT] Sending computation data to coordinator', flush=True)
-
             if state == state_wait_for_aggregation:
                 print("Wait for aggregation")
                 self.progress = 'wait for aggregation'
@@ -178,7 +174,7 @@ class AppLogic:
                     print("Received aggregation data from coordinator.")
                     global_coefs = jsonpickle.decode(self.data_incoming[0])
                     self.data_incoming = []
-                    client.set_coefs(global_coefs)
+                    self.client.set_coefs(global_coefs)
                     state = state_writing_results
 
             # GLOBAL PART
@@ -189,8 +185,8 @@ class AppLogic:
                 if len(self.data_incoming) == len(self.clients):
                     data = [jsonpickle.decode(client_data) for client_data in self.data_incoming]
                     self.data_incoming = []
-                    X_offset_global, y_offset_global, X_scale_global = aggregate_preprocessing(data)
-                    client.set_global_offsets([X_offset_global, y_offset_global, X_scale_global])
+                    X_offset_global, y_offset_global, X_scale_global = self.client.aggregate_preprocessing(data)
+                    self.client.set_global_offsets([X_offset_global, y_offset_global, X_scale_global])
                     data_to_broadcast = jsonpickle.encode([X_offset_global, y_offset_global, X_scale_global])
                     self.data_outgoing = data_to_broadcast
                     self.status_available = True
@@ -198,42 +194,39 @@ class AppLogic:
                     print(f'[COORDINATOR] Broadcasting preprocessing data to clients', flush=True)
                 else:
                     print("Data from some clients still missing.")
-
             if state == state_global_aggregation:
                 print("Global computation")
                 self.progress = 'computing...'
                 if len(self.data_incoming) == len(self.clients):
                     data = [jsonpickle.decode(client_data) for client_data in self.data_incoming]
                     self.data_incoming = []
-                    aggregated_beta = aggregate_beta(data)
-                    client.set_coefs(aggregated_beta)
+                    aggregated_beta = self.client.aggregate_beta(data)
+                    self.client.set_coefs(aggregated_beta)
                     data_to_broadcast = jsonpickle.encode(aggregated_beta)
                     self.data_outgoing = data_to_broadcast
                     self.status_available = True
                     state = state_writing_results
                     print(f'[COORDINATOR] Broadcasting computation data to clients', flush=True)
-
             if state == state_writing_results:
                 print("Writing results")
                 # now you can save it to a file
-                print("Coef:", client.model.coef_)
-                joblib.dump(client.model, self.OUTPUT_DIR + '/model.pkl')
-                model = client.model
+                print("Coef:", self.client.model.coef_)
+                joblib.dump(self.client.model, self.OUTPUT_DIR + '/model.pkl')
+                model = self.client.model
 
                 if self.test_size is not None:
                     # Make predictions using the testing set
-                    y_pred = model.predict(client.X_test)
+                    y_pred = model.predict(self.client.X_test)
 
                     # The mean squared error
                     scores = {
-                        "r2_score": [r2_score(client.y_test, y_pred)],
-                        "explained_variance_score": [explained_variance_score(client.y_test, y_pred)],
-                        "max_error": [max_error(client.y_test, y_pred)],
-                        "mean_absolute_error": [mean_absolute_error(client.y_test, y_pred)],
-                        "mean_squared_error": [mean_squared_error(client.y_test, y_pred)],
-                        "mean_squared_log_error": [mean_squared_log_error(client.y_test, y_pred)],
-                        "mean_absolute_percentage_error": [mean_absolute_percentage_error(client.y_test, y_pred)],
-                        "median_absolute_error": [median_absolute_error(client.y_test, y_pred)]
+                        "r2_score": [r2_score(self.client.y_test, y_pred)],
+                        "explained_variance_score": [explained_variance_score(self.client.y_test, y_pred)],
+                        "max_error": [max_error(self.client.y_test, y_pred)],
+                        "mean_absolute_error": [mean_absolute_error(self.client.y_test, y_pred)],
+                        "mean_squared_error": [mean_squared_error(self.client.y_test, y_pred)],
+                        "mean_absolute_percentage_error": [mean_absolute_percentage_error(self.client.y_test, y_pred)],
+                        "median_absolute_error": [median_absolute_error(self.client.y_test, y_pred)]
                     }
 
                     scores_df = pd.DataFrame.from_dict(scores).T
@@ -241,7 +234,6 @@ class AppLogic:
                     scores_df.to_csv(self.OUTPUT_DIR + "/scores.csv")
 
                 state = state_finishing
-
             if state == state_finishing:
                 print("Finishing")
                 self.progress = 'finishing...'
