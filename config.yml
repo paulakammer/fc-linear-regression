@@ -1,9 +1,13 @@
 fc_linear_regression:
-  files:
-    input: "client1.csv"
+  input:
+    train: "train.csv"
+    test: "test.csv"
+  output:
+    pred: "pred.csv"
+    test: "test.csv"
+  format:
     sep: ","
-    label_column: "label"
-
-  evaluation:
-    test_size: 0.33 # if None, no evaluation will be performed
-    random_state: 42 # For reproducibility, also None possible
+    label: "target"
+  split:
+    mode: "directory" # directory if cross validation was used before, else file
+    dir: "data" # data if cross validation app was used before, else .

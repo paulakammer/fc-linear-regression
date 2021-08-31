@@ -1,3 +1,4 @@
+import os
 import shutil
 import threading
 import time
@@ -6,9 +7,6 @@ import joblib
 import jsonpickle
 import pandas as pd
 import yaml
-from sklearn.metrics import mean_squared_error, r2_score, explained_variance_score, max_error, mean_absolute_error, \
-    mean_absolute_percentage_error, median_absolute_error
-from sklearn.model_selection import train_test_split
 
 from app.algo import Coordinator, Client
 
@@ -42,23 +40,49 @@ class AppLogic:
         self.INPUT_DIR = "/mnt/input"
         self.OUTPUT_DIR = "/mnt/output"
 
-        self.client = None
-        self.input = None
-        self.sep = None
+        self.models = {}
+        self.splits = {}
+        self.test_splits = {}
+        self.betas = {}
+        self.train = None
+        self.test = None
+        self.pred_output = None
+        self.test_output = None
         self.label_column = None
-        self.test_size = None
-        self.random_state = None
+        self.sep = None
+        self.split_mode = None
+        self.split_dir = None
 
     def read_config(self):
-        with open(self.INPUT_DIR + '/config.yml') as f:
-            config = yaml.load(f, Loader=yaml.FullLoader)['fc_linear_regression']
-            self.input = config['files']['input']
-            self.sep = config['files']['sep']
-            self.label_column = config['files']['label_column']
-            self.test_size = config['evaluation']['test_size']
-            self.random_state = config['evaluation']['random_state']
+        try:
+            with open(self.INPUT_DIR + '/config.yml') as f:
+                config = yaml.load(f, Loader=yaml.FullLoader)['fc_linear_regression']
 
-        shutil.copyfile(self.INPUT_DIR + '/config.yml', self.OUTPUT_DIR + '/config.yml')
+                self.train = config['input']['train']
+                self.test = config['input']['test']
+                self.pred_output = config['output']['pred']
+                self.test_output = config['output']['test']
+                self.label_column = config['format']['label']
+                self.sep = config['format']['sep']
+                self.split_mode = config['split']['mode']
+                self.split_dir = config['split']['dir']
+
+            if self.split_mode == "directory":
+                self.splits = dict.fromkeys(
+                    [f.path for f in os.scandir(f'{self.INPUT_DIR}/{self.split_dir}') if f.is_dir()])
+                self.test_splits = dict.fromkeys(self.splits.keys())
+                self.models = dict.fromkeys(self.splits.keys())
+                self.betas = dict.fromkeys(self.splits.keys())
+            else:
+                self.splits[self.INPUT_DIR] = None
+
+            for split in self.splits.keys():
+                os.makedirs(split.replace("/input/", "/output/"), exist_ok=True)
+
+            shutil.copyfile(self.INPUT_DIR + '/config.yml', self.OUTPUT_DIR + '/config.yml')
+            print(f'Read config file.', flush=True)
+        except:
+            print(f'N config file found. Please use the frontend to select input.', flush=True)
 
     def handle_setup(self, client_id, coordinator, clients):
         # This method is called once upon startup and contains information about the execution context of this instance
@@ -87,14 +111,11 @@ class AppLogic:
         # === States ===
         state_initializing = 1
         state_read_input = 2
-        state_local_preprocessing = 3
-        state_wait_for_preprocessing = 4
-        state_aggregate_preprocessing = 5
-        state_local_computation = 6
-        state_wait_for_aggregation = 7
-        state_global_aggregation = 8
-        state_writing_results = 9
-        state_finishing = 10
+        state_local_computation = 3
+        state_wait_for_aggregation = 4
+        state_global_aggregation = 5
+        state_writing_results = 6
+        state_finishing = 7
 
         # Initial state
         state = state_initializing
@@ -102,62 +123,48 @@ class AppLogic:
 
         while True:
             if state == state_initializing:
-                print("Initializing")
+                print("[CLIENT] Initializing")
                 if self.id is not None:  # Test if setup has happened already
                     state = state_read_input
-                    print("Coordinator", self.coordinator)
-                    if self.coordinator:
-                        self.client = Coordinator()
-                    else:
-                        self.client = Client()
+                    print("[CLIENT] Coordinator", self.coordinator)
+
             if state == state_read_input:
-                print('Read input and config')
+                self.progress = "read input"
+                print('[CLIENT] Read input and config')
                 self.read_config()
 
-                numerics = ['int16', 'int32', 'int64', 'float16', 'float32', 'float64']
-                X = pd.read_csv(self.INPUT_DIR + "/" + self.input, sep=self.sep).select_dtypes(
-                    include=numerics).dropna()
-                y = X.loc[:, self.label_column]
-                X = X.drop(self.label_column, axis=1)
+                for split in self.splits.keys():
+                    if self.coordinator:
+                        self.models[split] = Coordinator()
+                    else:
+                        self.models[split] = Client()
+                    train_path = split + "/" + self.train
+                    test_path = split + "/" + self.test
+                    X = pd.read_csv(train_path, sep=self.sep)
+                    y = X.loc[:, self.label_column]
+                    X = X.drop(self.label_column, axis=1)
 
-                if self.test_size is not None:
-                    X, X_test, y, y_test = train_test_split(X, y, test_size=self.test_size,
-                                                            random_state=self.random_state)
-                    self.client.X_test = X_test
-                    self.client.y_test = y_test
-                self.client.X = X
-                self.client.y = y
+                    X_test = pd.read_csv(test_path, sep=self.sep)
+                    y_test = X_test.loc[:, self.label_column]
+                    X_test = X_test.drop(self.label_column, axis=1)
 
-                state = state_local_preprocessing
-            if state == state_local_preprocessing:
-                print("Local Preprocessing")
-                self.progress = 'preprocessing...'
-                self.client.local_preprocessing()
-                data_to_send = jsonpickle.encode(
-                    [self.client.X_offset_local, self.client.y_offset_local, self.client.X_scale_local, self.client.X.shape[0]])
-                if self.coordinator:
-                    self.data_incoming.append(data_to_send)
-                    state = state_aggregate_preprocessing
-                else:
-                    self.data_outgoing = data_to_send
-                    self.status_available = True
-                    state = state_wait_for_preprocessing
-                    print(f'[CLIENT] Sending preprocessing data to coordinator', flush=True)
-            if state == state_wait_for_preprocessing:
-                print("Waiting for preprocessing")
-                self.progress = 'wait for preprocessing'
-                if len(self.data_incoming) > 0:
-                    print("Received preprocess data from coordinator.")
-                    data = jsonpickle.decode(self.data_incoming[0])
-                    self.data_incoming = []
-                    self.client.set_global_offsets(data)
+                    y_test.to_csv(split.replace("/input/", "/output/") + "/" + self.test_output, index=False)
+
+                    self.splits[split] = [X, y]
+                    self.test_splits[split] = [X_test, y_test]
+
                     state = state_local_computation
             if state == state_local_computation:
-                print("Perform local computation")
+                print("[CLIENT] Perform local computation")
                 self.progress = 'local computation'
-                xtx, xty = self.client.local_computation()
+                data_to_send = {}
+                for split in self.splits.keys():
+                    model = self.models[split]
 
-                data_to_send = jsonpickle.encode([xtx, xty])
+                    xtx, xty = model.local_computation(self.splits[split][0], self.splits[split][1])
+
+                    data_to_send[split] = [xtx, xty]
+                data_to_send = jsonpickle.encode(data_to_send)
 
                 if self.coordinator:
                     self.data_incoming.append(data_to_send)
@@ -167,80 +174,64 @@ class AppLogic:
                     self.status_available = True
                     state = state_wait_for_aggregation
                     print(f'[CLIENT] Sending computation data to coordinator', flush=True)
+
             if state == state_wait_for_aggregation:
-                print("Wait for aggregation")
+                print("[CLIENT] Wait for aggregation")
                 self.progress = 'wait for aggregation'
                 if len(self.data_incoming) > 0:
-                    print("Received aggregation data from coordinator.")
+                    print("[CLIENT] Received aggregation data from coordinator.")
                     global_coefs = jsonpickle.decode(self.data_incoming[0])
                     self.data_incoming = []
-                    self.client.set_coefs(global_coefs)
+                    for split in self.splits:
+                        self.models[split].set_coefs(global_coefs[split])
+
                     state = state_writing_results
 
             # GLOBAL PART
 
-            if state == state_aggregate_preprocessing:
-                print("Aggregate preprocessing data...")
-                self.progress = 'aggregate preprocessing...'
-                if len(self.data_incoming) == len(self.clients):
-                    data = [jsonpickle.decode(client_data) for client_data in self.data_incoming]
-                    self.data_incoming = []
-                    X_offset_global, y_offset_global, X_scale_global = self.client.aggregate_preprocessing(data)
-                    self.client.set_global_offsets([X_offset_global, y_offset_global, X_scale_global])
-                    data_to_broadcast = jsonpickle.encode([X_offset_global, y_offset_global, X_scale_global])
-                    self.data_outgoing = data_to_broadcast
-                    self.status_available = True
-                    state = state_local_computation
-                    print(f'[COORDINATOR] Broadcasting preprocessing data to clients', flush=True)
-                else:
-                    print("Data from some clients still missing.")
             if state == state_global_aggregation:
-                print("Global computation")
+                print("[CLIENT] Global computation")
                 self.progress = 'computing...'
                 if len(self.data_incoming) == len(self.clients):
                     data = [jsonpickle.decode(client_data) for client_data in self.data_incoming]
                     self.data_incoming = []
-                    aggregated_beta = self.client.aggregate_beta(data)
-                    self.client.set_coefs(aggregated_beta)
-                    data_to_broadcast = jsonpickle.encode(aggregated_beta)
+                    for split in self.splits:
+                        split_data = []
+                        for client in data:
+                            split_data.append(client[split])
+                        aggregated_beta = self.models[split].aggregate_beta(split_data)
+                        self.models[split].set_coefs(aggregated_beta)
+                        self.betas[split] = aggregated_beta
+
+                    data_to_broadcast = jsonpickle.encode(self.betas)
                     self.data_outgoing = data_to_broadcast
                     self.status_available = True
                     state = state_writing_results
-                    print(f'[COORDINATOR] Broadcasting computation data to clients', flush=True)
+                    print(f'[CLIENT] Broadcasting computation data to clients', flush=True)
+
             if state == state_writing_results:
-                print("Writing results")
+                print("[CLIENT] Writing results")
                 # now you can save it to a file
-                print("Coef:", self.client.model.coef_)
-                joblib.dump(self.client.model, self.OUTPUT_DIR + '/model.pkl')
-                model = self.client.model
+                for split in self.splits:
+                    model = self.models[split]
+                    joblib.dump(model, split.replace("/input/", "/output/") + '/model.pkl')
+                    y_pred = pd.DataFrame(model.predict(self.test_splits[split][0]), columns=["y_pred"])
+                    y_pred.to_csv(split.replace("/input/", "/output/") + "/" + self.pred_output, index=False)
 
-                if self.test_size is not None:
-                    # Make predictions using the testing set
-                    y_pred = model.predict(self.client.X_test)
+                if self.coordinator:
+                    self.data_incoming.append('DONE')
+                    state = state_finishing
+                else:
+                    self.data_outgoing = 'DONE'
+                    self.status_available = True
+                    break
 
-                    # The mean squared error
-                    scores = {
-                        "r2_score": [r2_score(self.client.y_test, y_pred)],
-                        "explained_variance_score": [explained_variance_score(self.client.y_test, y_pred)],
-                        "max_error": [max_error(self.client.y_test, y_pred)],
-                        "mean_absolute_error": [mean_absolute_error(self.client.y_test, y_pred)],
-                        "mean_squared_error": [mean_squared_error(self.client.y_test, y_pred)],
-                        "mean_absolute_percentage_error": [mean_absolute_percentage_error(self.client.y_test, y_pred)],
-                        "median_absolute_error": [median_absolute_error(self.client.y_test, y_pred)]
-                    }
-
-                    scores_df = pd.DataFrame.from_dict(scores).T
-                    scores_df = scores_df.rename({0: "score"}, axis=1)
-                    scores_df.to_csv(self.OUTPUT_DIR + "/scores.csv")
-
-                state = state_finishing
             if state == state_finishing:
                 print("Finishing")
                 self.progress = 'finishing...'
-                if self.coordinator:
-                    time.sleep(10)
-                self.status_finished = True
-                break
+                if len(self.data_incoming) == len(self.clients):
+                    self.status_finished = True
+                    break
 
             time.sleep(1)
 
