@@ -214,9 +214,9 @@ class AppLogic:
                 # now you can save it to a file
                 for split in self.splits:
                     model = self.models[split]
-                    joblib.dump(model, split.replace("/input/", "/output/") + '/model.pkl')
+                    joblib.dump(model, split.replace("/input", "/output") + '/model.pkl')
                     y_pred = pd.DataFrame(model.predict(self.test_splits[split][0]), columns=["y_pred"])
-                    y_pred.to_csv(split.replace("/input/", "/output/") + "/" + self.pred_output, index=False)
+                    y_pred.to_csv(split.replace("/input", "/output") + "/" + self.pred_output, index=False)
 
                 if self.coordinator:
                     self.data_incoming.append('DONE')
