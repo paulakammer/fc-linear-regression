@@ -148,7 +148,7 @@ class AppLogic:
                     y_test = X_test.loc[:, self.label_column]
                     X_test = X_test.drop(self.label_column, axis=1)
 
-                    y_test.to_csv(split.replace("/input/", "/output/") + "/" + self.test_output, index=False)
+                    y_test.to_csv(split.replace("/input", "/output") + "/" + self.test_output, index=False)
 
                     self.splits[split] = [X, y]
                     self.test_splits[split] = [X_test, y_test]
