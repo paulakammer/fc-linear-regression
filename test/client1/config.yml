@@ -7,7 +7,7 @@ fc_linear_regression:
     test: "test.csv"
   format:
     sep: ","
-    label: "target"
+    label: "TARGET_deathRate"
   split:
     mode: "file" # directory if cross validation was used before, else file
     dir: "." # data if cross validation app was used before, else .
