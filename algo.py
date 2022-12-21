@@ -32,12 +32,10 @@ class Coordinator(Client):
 
         return matrix_global
 
-    def aggregate_beta(self, local_results):
-        XT_X_matrices = [client[0] for client in local_results]
-        XT_X_matrix_global = self.aggregate_matrices_(XT_X_matrices)
-
-        XT_y_vectors = [client[1] for client in local_results]
-        XT_y_vector_global = self.aggregate_matrices_(XT_y_vectors)
+    def aggregate_beta(self, XT_X_matrix_global, XT_y_vector_global, use_smpc):
+        if not use_smpc:
+            XT_X_matrix_global = self.aggregate_matrices_(XT_X_matrix_global)
+            XT_y_vector_global = self.aggregate_matrices_(XT_y_vector_global)
 
         XT_X_matrix_inverse = np.linalg.inv(XT_X_matrix_global)
         beta_vector = np.dot(XT_X_matrix_inverse, XT_y_vector_global)
